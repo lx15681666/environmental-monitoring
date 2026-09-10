@@ -1,55 +1,37 @@
-# Prerequisites
-*.d
+# 编译输出目录
+Debug/
+Release/
+build/
+Drivers/
+*.dep
 
-# Object files
+# 编译中间文件
 *.o
-*.ko
-*.obj
-*.elf
+*.d
+*.lst
+*.crf
 
-# Linker output
-*.ilk
-*.map
-*.exp
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
+# 可执行文件
+*.axf
 *.hex
+*.bin
+*.elf
+*.map
+*.base
+*.htm
 
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
+# IDE 配置文件 (Keil)
+*.uvoptx
+*.uvguix.*
+DebugConfig/
 
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
+# IDE 配置文件 (STM32CubeIDE)
+.settings/
+.metadata/
+*.launch
 
-# debug information files
-*.dwo
+# 其他
+*.bak
+*.log
+.DS_Store
+Thumbs.db
