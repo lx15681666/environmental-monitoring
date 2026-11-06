@@ -432,7 +432,7 @@ void xPortPendSVHandler( void )
 {
 	/* This is a naked function. */
 
-	__asm volatile
+		__asm volatile
 	(
 	"	mrs r0, psp							\n"
 	"	isb									\n"

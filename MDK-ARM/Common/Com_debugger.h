@@ -24,4 +24,9 @@
 
 #endif
 
+void debugger_log(uint8_t *buffer);
+void debugger_test();
+
+// void debugger_log(const char *buffer);
+
 #endif

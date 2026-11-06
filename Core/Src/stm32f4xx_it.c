@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "freeRTOS.h"
 #include "task.h"
+#include "Com_debugger.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,12 +54,13 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-extern void xPortSysTickHandler(void); // �?要extern修饰
+extern void xPortSysTickHandler(void); // �??要extern修饰
 
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
 extern I2C_HandleTypeDef hi2c1;
+extern DMA_HandleTypeDef hdma_usart1_tx;
 extern UART_HandleTypeDef huart2;
 /* USER CODE BEGIN EV */
 
@@ -162,9 +164,8 @@ void SysTick_Handler(void)
 {
   /* USER CODE BEGIN SysTick_IRQn 0 */
   // 手动调用freeRTOS的systick中断
-  if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) // 判断是否启动freeRTOS任务调度�?
+  if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) // 判断是否启动freeRTOS任务调度�??
   {
-
     xPortSysTickHandler();
   }
   /* USER CODE END SysTick_IRQn 0 */
@@ -207,6 +208,20 @@ void USART2_IRQHandler(void)
   /* USER CODE BEGIN USART2_IRQn 1 */
 
   /* USER CODE END USART2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles DMA2 stream7 global interrupt.
+  */
+void DMA2_Stream7_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream7_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream7_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart1_tx);
+  /* USER CODE BEGIN DMA2_Stream7_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream7_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */

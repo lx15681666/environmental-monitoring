@@ -1,56 +1,17 @@
 #include "Int_AHT20.h"
 
 #define AHT20_ADDRESS (0x38 << 1) // AHT20 I2C address shifted for STM32 HAL
-#define AHT20_CMD_INIT 0xBE
+// #define AHT20_CMD_INIT 0xBE
 #define AHT20_CMD_MEASURE 0xAC
 #define AHT20_CMD_SOFT_RESET 0xBA
 
-float temperature = 0.0f;
-float humidity = 0.0f;
-typedef struct
-{
-    float temperature; // 温度。
-    float humidity;   // 湿度。
-} AHT20_Value;
+char *json_data; // json数据
 
-// 发送指令
-uint8_t AHT20_SendCmd(uint8_t cmd, uint8_t *data, uint8_t len)
-{
-    if (len > 2 || (len > 0 && data == NULL))
-    {
-        return HAL_ERROR;
-    }
+static AHT20_Value aht20_value = {0}; // AHT20 温湿度数据;
 
-    if (len == 0)
-    {
-        return HAL_I2C_Master_Transmit(&hi2c1, AHT20_ADDRESS, &cmd, 1, 100);
-    }
-    else
-    {
-        uint8_t buf[3] = {cmd, data[0], data[1]};
-        return HAL_I2C_Master_Transmit(&hi2c1, AHT20_ADDRESS, buf, len + 1, 100);
-    }
-}
-// 读取数据
-uint8_t AHT20_ReadData(uint8_t *buffer, uint8_t len)
+char *build_report_data(float temp_value, float humidity_value, uint64_t timetemp)
 {
-    return HAL_I2C_Master_Receive(&hi2c1, AHT20_ADDRESS, buffer, len, 100);
-}
-
-// AHT20初始化
-uint8_t AHT20_Init(void)
-{
-    uint8_t cmd_data[2] = {0x08, 0x00}; // 初始化命令数据
-    uint8_t status = AHT20_SendCmd(AHT20_CMD_INIT, cmd_data, 2);
-    if (status != HAL_OK)
-    {
-        return status;
-    }
-    HAL_Delay(10);
-    return HAL_OK;
-}
-char *build_report_data(float temp_value, float humidity_value)
-{
+    // debugger_printf("temp_value: %f, humidity_value: %f, timetemp: %llu", temp_value, humidity_value, timetemp);
     cJSON *root = cJSON_CreateObject();
     if (root == NULL)
     {
@@ -72,11 +33,15 @@ char *build_report_data(float temp_value, float humidity_value)
     cJSON_AddItemToObject(root, "params", params);
     cJSON_AddItemToObject(params, "temp", temp);
     cJSON_AddRawToObject(temp, "value", value_text);
+    cJSON_AddNumberToObject(temp, "time", (double)timetemp);
+
     memset(value_text, 0, sizeof(value_text));
     snprintf(value_text, sizeof(value_text), "%.2f", (double)humidity_value);
     cJSON_AddItemToObject(params, "humidity", humidity);
     cJSON_AddRawToObject(humidity, "value", value_text);
-    debugger_printf("humidity is value_text: %s", value_text);
+    cJSON_AddNumberToObject(humidity, "time", (double)timetemp); // 添加时间戳
+
+    // debugger_printf("humidity is value_text: %s", value_text);
     if (params == NULL || temp == NULL)
     {
         cJSON_Delete(root);
@@ -87,15 +52,10 @@ char *build_report_data(float temp_value, float humidity_value)
     return json_string;
 }
 
-uint8_t AHT20_ReadTemperatureAndHumidity(float *temperature, float *humidity)
+uint8_t AHT20_ReadTemperatureAndHumidity()
 {
     uint8_t read_buffer[6] = {0}; // 用于存储读取的数据
-    uint32_t tempp_raw = 0, hum_raw = 0;
-
-    if (temperature == NULL || humidity == NULL)
-    {
-        return 4;
-    }
+    uint32_t temp_raw = 0, hum_raw = 0;
 
     // 发送测量命令
     if (HAL_I2C_Master_Transmit(&hi2c1, AHT20_ADDRESS, (uint8_t[]){AHT20_CMD_MEASURE, 0x33, 0x00}, 3, 100) != HAL_OK)
@@ -103,7 +63,7 @@ uint8_t AHT20_ReadTemperatureAndHumidity(float *temperature, float *humidity)
         return 1; // 发送命令失败
     }
 
-    HAL_Delay(80); // 等待测量完成
+    vTaskDelay(80); // 等待测量完成
     for (uint8_t retry = 0; retry < 10; retry++)
     {
         if (HAL_I2C_Master_Receive(&hi2c1, AHT20_ADDRESS, read_buffer, 6, 100) != HAL_OK)
@@ -118,7 +78,7 @@ uint8_t AHT20_ReadTemperatureAndHumidity(float *temperature, float *humidity)
         {
             return 3;
         }
-        HAL_Delay(10);
+        vTaskDelay(10);
     }
     if (read_buffer[0] & 0x80U)
     {
@@ -128,39 +88,41 @@ uint8_t AHT20_ReadTemperatureAndHumidity(float *temperature, float *humidity)
     hum_raw = ((uint32_t)(read_buffer[1]) << 12) |
               ((uint32_t)(read_buffer[2]) << 4) |
               ((uint32_t)(read_buffer[3]) >> 4);
-    tempp_raw = ((uint32_t)(read_buffer[3] & 0x0F) << 16) |
-                ((uint32_t)(read_buffer[4]) << 8) |
-                ((uint32_t)(read_buffer[5]));
+    temp_raw = ((uint32_t)(read_buffer[3] & 0x0F) << 16) |
+               ((uint32_t)(read_buffer[4]) << 8) |
+               ((uint32_t)(read_buffer[5]));
     // 转换为实际值
-    *humidity = (float)hum_raw * 100.0f / 1048576.0f;
-    *temperature = (float)tempp_raw * 200.0f / 1048576.0f - 50.0f;
+    aht20_value.humidity = (float)hum_raw * 100.0f / 1048576.0f;
+    aht20_value.temperature = (float)temp_raw * 200.0f / 1048576.0f - 50.0f;
     return HAL_OK;
 }
 
-void AHT20Task(void *arg) // 获取具体温度
+/**
+ * @brief 获取json数据
+ * @return json数据指针，失败返回NULL
+ */
+char *get_json_data(record_t record)
 {
-    AHT20_Value aht20_value = {0};
-    uint8_t status = AHT20_ReadTemperatureAndHumidity(&aht20_value.temperature, &aht20_value.humidity);
+    return build_report_data(record.temp / 100.0f, record.humi / 100.0f, record.timestamp);
+}
 
-    if (status == HAL_OK)
+/**
+ * 构建records
+ */
+
+static uint8_t seq = 0;
+uint8_t create_record(record_t *record)
+{
+    uint8_t status = AHT20_ReadTemperatureAndHumidity();
+    // debugger_printf("create_record status: %f, %f\n", aht20_value.temperature * 100 , aht20_value.humidity * 100);
+    if (status == HAL_OK) // 先获取数据，再构建record_t数据
     {
-        debugger_printf("temp is%f, humidity is %f", aht20_value.temperature, aht20_value.humidity);
-        char *json_data = build_report_data(aht20_value.temperature, aht20_value.humidity);
-        // printf("json_data is %s\r\n", json_data);
-        if (json_data != NULL)
-        {
-            Publish_MQTT_Message(json_data); // 上报数据
-            free(json_data);                 // 记得释放内存
-        }
-        else
-        {
-            debugger_printf("build_report_data failed: json_data is NULL\r\n");
-        }
-        // 上报数据
-        // debugger_printf("temperature: %.2f C, humidity: %.2f %%\r\n", aht20_value.temperature, aht20_value.humidity);
+        record->magic = 0xA5A5;                       // 记录有效性
+        record->temp = aht20_value.temperature * 100; // 温度
+        record->humi = aht20_value.humidity * 100;    // 湿度
+        record->seq = seq++;                          // 序号
+        record->timestamp = Time_GetUnixMs();         // 获取当前系统时间戳
+        return HAL_OK;
     }
-    else
-    {
-        debugger_printf("AHT20 read failed: %u\r\n", status);
-    }
+    return HAL_ERROR; // 失败
 }

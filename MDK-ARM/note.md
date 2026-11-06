@@ -63,3 +63,25 @@ snprintf(value_text, sizeof(value_text), "%.1f", (double)temp_value);
 20. freeRTOS创建的A任务如果不在任务中使用vTaskDelay的话,则不会让出cpu的控制权,除非有和该任务优先级相等的B任务,
 那么当改B执行的时候CPU的控制权交由B来控制.
 
+21. freeRTOS必须在stm32xxx_it.c里面手动调用FreeRTOS 的 xPortSysTickHandler()，否则调度器无法产生系统节拍，rtos任务不会被调度执行。
+
+22. xTaskCreate的调用过程：
+    1. 为任务分配栈空间，如果架构是往高地址增长得话先为TCB（任务控制块）分配栈空间，然后再为任务函数分配栈空间。如果向低地址增长的话，就先为任务函数分配栈空间，然后再为TCB（任务控制块）分配栈空间。这样是为了TCB不会被踩坏。
+    2. 分配了任务的栈空间之后，监测TCB有没有成功分配，如果没有成功分配，要释放任务函数的栈空间。
+    3. pvPortMallocStack()会返回一个栈底指针，也就是任务栈空间的初始指针，这个指针要保存到TCB的pxStack字段,随后记录栈空间是动态分配还是静态分配的，保存到TCB的ucStaticallyAllocated字段。
+    4. 接着调用prvInitialiseNewTask()：
+       1. 从栈的初始位置，将整个任务栈空间的值写成0xA5，这个是用来检测栈是否被踩坏的。
+       2. 将传入的任务的名称保存到TCB的pcTaskName字符数组中，由configMAX_TASK_NAME_LEN宏来定义名称的长度，然后限制任务优先级的值，由configMAX_PRIORITIES宏来定义其最大数值，如果传入任务优先级大于或等于这个宏，那么将优先级限值，优先级保存到TCB的uxPriority字段中，若是开启了configUSE_MUTEXES互斥量的宏，则需要记录TCB的初始优先级，保存到TCB的uxBasePriority，为后面优先级反转，提升，埋下铺垫。
+    5. 调用vListInitialiseItem(),将初始化TCB中的状态列表项xStateListItem和事件列表项xEventListItem，将列表项结构体中的pxContainer赋初始值NULL，
+    6. 调用listSET_LIST_ITEM_OWNER()将TCB的地址赋值给xStateListItem中的pvOwner，反指回TCB地址
+    7. listSET_LIST_ITEM_VALUE() 计算任务排序顺序，按xItemValue值越小，越先执行，利用减法实现排序。
+    8. 从栈顶往低地址依次摆 xPSR → PC → LR → R12/R3/R2/R1 → R0 → EXC_RETURN → 跳过 R4-R11。返回值——摆好后的最低地址——被存进 pxNewTCB->pxTopOfStack。
+    9.  TCB的句柄已经生成可以根据句柄直接修改优先级或者删除。
+    10. 调用prvAddNewTaskToReadyList:
+        1.  进入临界区，每成功创建一个任务生成TCB之后，高优先级的会抢占pxCurrentTCB 指针
+        2.  创建各种任务列表
+23. 在创建完成各种任务之后，开始调用vTaskStartScheduler()调度：
+    1.  调用prvCreateIdleTasks()创建空闲任务，成功之后调用xTimerCreateTimerTask()
+    2.  调用vPortSetupTimerInterrupt初始化系统定时器的重装载值
+    3.  调用prvPortStartFirstTask开始执行第一个任务
+	

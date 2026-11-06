@@ -6,13 +6,20 @@
 #define PRODUCT_ID "ZcizCASxvs"
 #define CLIENT_ID "stm32f407_esp8266"
 #define DEVICE_NAME "stm32f407_esp8266"
-#define MQTT_PASSWORD "version=2018-10-31&res=products%2FZcizCASxvs%2Fdevices%2Fstm32f407_esp8266&et=1895232083&method=md5&sign=8i4WA2y9utMjNwnAoHW7zw%3D%3D"
+#define MQTT_PASSWORD "version=2018-10-31&res=products%2FZcizCASxvs%2Fdevices%2Fstm32f407_esp8266&et=1895232083&method=md5&sign=MOaOjwClixZ0tSs3oy0l1A%3D%3D"
 #define MQTT_Link_Address "mqtts.heclouds.com"
 #define MQTT_Link_Port 1883
 
 char cmd[256];
 
-EspState esp_state = ESP_STATE_QUERY_STATE;
+EspState esp_state = AT;
+
+// OTA升级信息结构体
+static OTAJSON_t ota_json = {0};
+
+sendState state = SEND;
+
+extern ESP8266_Connect_State connectState; // 进入ESP_STATE_READY之后才算在线ON_LINE
 
 // 状态机上下文：不保存阻塞等待，而是保存当前状态和超时时刻
 static uint32_t esp_deadline = 0;
@@ -27,28 +34,11 @@ static uint8_t Esp8266_DeadlineExpired(void)
     return (int32_t)(HAL_GetTick() - esp_deadline) >= 0;
 }
 
-static void Esp8266_StartWait(EspState wait_state, uint32_t timeout_ms)
+static void Esp8266_StartWait(uint32_t timeout_ms)
 {
-    esp_state = wait_state;
+    // esp_state = wait_state;
     esp_deadline = HAL_GetTick() + timeout_ms;
 }
-
-static void Esp8266_CommandFailed(void)
-{
-    esp_retry_count++;
-    if (esp_retry_count >= 3U)
-    {
-        // 连续失败后进入错误状态，等待一段时间再重新初始化模块
-        debugger_printf("ESP8266 state failed: %d\r\n", esp_state);
-        esp_state = ESP_STATE_QUERY_STATE;
-        esp_deadline = HAL_GetTick() + 5000U;
-    }
-    else
-    {
-        esp_state = ESP_STATE_SEND_AT;
-    }
-}
-
 static uint8_t Esp8266_ResponseContains(const char *keyword)
 {
     return keyword != NULL && strstr((char *)rx_wifi_buffer, keyword) != NULL;
@@ -65,278 +55,121 @@ static void Esp8266_ClearResponse(void)
 void Esp8266_init(void) // esp初始化
 {
     Esp8266_ClearResponse();
-    esp_state = ESP_STATE_QUERY_STATE;
+    esp_state = QUERY_STATE;
     esp_retry_count = 0;
     publish_pending = 0;
 }
 
-void ESP8266_Task(void)
+sendState sendCommand(char *cmd, char *keyWords, EspState sendCmd, uint8_t select)
+{
+    if (state == SEND)
+    {
+        ESP8266_SendCommand(cmd, select);
+        Esp8266_StartWait(5000);
+        state = WAIT;
+    }
+    if (state == WAIT)
+    {
+        if (Esp8266_ResponseContains(keyWords) || Esp8266_ResponseContains("ERROR"))
+        {
+            debugger_log(rx_wifi_buffer);
+            state = SEND;
+            esp_state = sendCmd;
+        }
+        else if (Esp8266_DeadlineExpired()) // 超时失败
+        {
+            state = SEND;
+            esp_state = AT;
+        }
+    }
+    return state;
+}
+EspState ESP8266_Task(void)
 {
     // 该函数每次只推进一个小步骤，不能在这里使用长时间 while 或 HAL_Delay
     switch (esp_state)
     {
-    case ESP_STATE_SEND_AT:
-        // 发送命令后立即返回，下一轮再检查响应
-        ESP8266_SendCommand("AT");
-        Esp8266_StartWait(ESP_STATE_WAIT_AT, 3000);
+    case AT: // 测试连通性
+        sendCommand("AT", "OK", SET_MODE, 1);
         break;
-
-    case ESP_STATE_WAIT_AT:
-        if (Esp8266_ResponseContains("OK"))
-        {
-            debugger_printf("buffer is %s\r\n", rx_wifi_buffer);
-            esp_retry_count = 0;
-            esp_state = ESP_STATE_SEND_MODE;
-        }
-        else if (Esp8266_ResponseContains("ERROR") || Esp8266_DeadlineExpired())
-        {
-            Esp8266_CommandFailed();
-        }
+    case SET_MODE: // 设置模式
+        sendCommand("AT+CWMODE=1", "OK", LINK_WIFI, 1);
         break;
-
-    case ESP_STATE_SEND_MODE:
-        ESP8266_SendCommand("AT+CWMODE=1");
-        Esp8266_StartWait(ESP_STATE_WAIT_MODE, 3000);
-        break;
-
-    case ESP_STATE_WAIT_MODE:
-        if (Esp8266_ResponseContains("OK"))
-        {
-            debugger_printf("buffer is %s\r\n", rx_wifi_buffer);
-            esp_retry_count = 0;
-            esp_state = ESP_STATE_SEND_WIFI;
-        }
-        else if (Esp8266_ResponseContains("ERROR") || Esp8266_DeadlineExpired())
-        {
-            Esp8266_CommandFailed();
-        }
-        break;
-
-    case ESP_STATE_SEND_WIFI:
+    case LINK_WIFI: // 连接wifi
         sprintf(cmd, "AT+CWJAP=\"%s\",\"%s\"", WIFI_NAME, WIFI_PASSWORD);
-        ESP8266_SendCommand(cmd);
-        Esp8266_StartWait(ESP_STATE_WAIT_WIFI, 20000);
+        sendCommand(cmd, "WIFI GOT IP", QUERY_STATE, 1);
         break;
-
-    case ESP_STATE_WAIT_WIFI:
-        // 连接 WiFi 需要等待异步事件，WIFI GOT IP 才表示已拿到地址
-        if (Esp8266_ResponseContains("WIFI GOT IP"))
-        {
-            debugger_printf("buffer is %s\r\n", rx_wifi_buffer);
-            esp_retry_count = 0;
-            esp_state = ESP_STATE_QUERY_STATE; // wifi连接成功就进入查询mqtt的状态
-        }
-        else if (Esp8266_ResponseContains("ERROR") ||
-                 Esp8266_ResponseContains("FAIL") ||
-                 Esp8266_DeadlineExpired())
-        {
-            Esp8266_CommandFailed();
-        }
+    case QUERY_STATE: // 查状态
+        sendCommand("AT+MQTTCONN?", "OK", VIEW_STATE, 1);
         break;
-    case ESP_STATE_QUERY_STATE:
-        sprintf(cmd, "AT+MQTTCONN?");
-        ESP8266_SendCommand(cmd);
-        Esp8266_StartWait(ESP_STATE_WAIT_QUERY_STATE, 7000);
+    case VIEW_STATE: // 判断状态
+        Get_MQTT_Connect_Status();
         break;
-    case ESP_STATE_WAIT_QUERY_STATE:
-        if (Esp8266_ResponseContains("OK"))
-        {
-            debugger_printf("query buffer is %s\r\n", rx_wifi_buffer);
-            esp_retry_count = 0;
-            int mqtt_status = Get_MQTT_Connect_Status();
-            debugger_printf("mqtt_status is%d\r\n", mqtt_status);
-            if (mqtt_status == 0)
-            {
-                esp_state = ESP_STATE_SEND_MQTT_USER;
-            }
-            else if (mqtt_status == 3)
-            {
-                esp_deadline = HAL_GetTick() + 3000;
-                esp_state = ESP_STATE_WAIT_MQTT_STATUS;
-            }
-            else if (mqtt_status == 4)
-            {
-                esp_state = ESP_STATE_SEND_PUBLISH_PROPERTY_RES;
-            }
-            else if (mqtt_status == 6)
-            {
-                esp_state = ESP_STATE_READY; // 一切准备就绪
-            }
-            else
-            {
-                esp_state = ESP_STATE_SEND_MQTT_USER;
-            }
-        }
-        else if (Esp8266_ResponseContains("ERROR") || Esp8266_DeadlineExpired())
-        {
-            debugger_printf("Query buffer is %s\r\n", rx_wifi_buffer);
-            Esp8266_CommandFailed();
-        }
-        break;
-    case ESP_STATE_WAIT_MQTT_STATUS: // 等待为6
-        if (Esp8266_DeadlineExpired())
-        {
-            esp_state = ESP_STATE_QUERY_STATE;
-        }
-        break;
-    case ESP_STATE_SEND_MQTT_USER:
+    case SET_USER: // 设置MQTT用户
         sprintf(cmd, "AT+MQTTUSERCFG=0,1,\"%s\",\"%s\",\"%s\",0,0,\"\"",
                 DEVICE_NAME, PRODUCT_ID, MQTT_PASSWORD);
-        ESP8266_SendCommand(cmd);
-        Esp8266_StartWait(ESP_STATE_WAIT_MQTT_USER, 3000);
+        sendCommand(cmd, "OK", SET_CONFIG, 1);
         break;
-
-    case ESP_STATE_WAIT_MQTT_USER:
-        if (Esp8266_ResponseContains("OK"))
-        {
-            debugger_printf("buffer is %s\r\n", rx_wifi_buffer);
-            esp_state = ESP_STATE_SEND_MQTT_CFG;
-        }
-        else if (Esp8266_ResponseContains("ERROR") || Esp8266_DeadlineExpired())
-        {
-            debugger_printf("ESP_STATE_WAIT_MQTT_USER buffer is %s\r\n", rx_wifi_buffer);
-            Esp8266_CommandFailed();
-        }
+    case SET_CONFIG: // 配置MQTT参数
+        sendCommand("AT+MQTTCONNCFG=0,60,0,\"\",\"\",0,0", "OK", LINK_BROKER, 1);
         break;
-
-    case ESP_STATE_SEND_MQTT_CFG:
-        ESP8266_SendCommand("AT+MQTTCONNCFG=0,60,0,\"\",\"\",0,0");
-        Esp8266_StartWait(ESP_STATE_WAIT_MQTT_CFG, 3000);
-        break;
-
-    case ESP_STATE_WAIT_MQTT_CFG:
-        if (Esp8266_ResponseContains("OK"))
-        {
-            debugger_printf("buffer is %s\r\n", rx_wifi_buffer);
-            esp_state = ESP_STATE_SEND_MQTT_CONN;
-        }
-        else if (Esp8266_ResponseContains("ERROR") || Esp8266_DeadlineExpired())
-        {
-            Esp8266_CommandFailed();
-        }
-        break;
-
-    case ESP_STATE_SEND_MQTT_CONN:
+    case LINK_BROKER: // 连接broker
         sprintf(cmd, "AT+MQTTCONN=0,\"%s\",%d,1", MQTT_Link_Address, MQTT_Link_Port);
-        ESP8266_SendCommand(cmd);
-        Esp8266_StartWait(ESP_STATE_WAIT_MQTT_CONN, 10000);
+        sendCommand(cmd, "OK", SUBSCRIBE_RES, 1);
         break;
-    case ESP_STATE_WAIT_MQTT_CONN:
-        if (Esp8266_ResponseContains("OK"))
-        {
-            debugger_printf("buffer is %s\r\n", rx_wifi_buffer);
-            esp_retry_count = 0;
-            esp_state = ESP_STATE_SEND_PUBLISH_PROPERTY_RES;
-            debugger_printf("ESP8266 MQTT ready\r\n");
-        }
-        else if (Esp8266_ResponseContains("ERROR") || Esp8266_DeadlineExpired())
-        {
-            debugger_printf("AT+MQTTCONN=0 buffer is %s\r\n", rx_wifi_buffer);
-            Esp8266_CommandFailed();
-        }
+    case SUBSCRIBE_RES: // 订阅物模型全部主题
+        sprintf(cmd, "AT+MQTTSUB=0,\"$sys/%s/%s/thing/property/#\",0", PRODUCT_ID, DEVICE_NAME);
+        sendCommand(cmd, "OK", READY, 1);
         break;
-
-    case ESP_STATE_SEND_PUBLISH_PROPERTY_RES:
-        sprintf(cmd, "AT+MQTTSUB=0,\"$sys/%s/%s/thing/property/post/reply\",0", PRODUCT_ID, DEVICE_NAME);
-        ESP8266_SendCommand(cmd);
-        Esp8266_StartWait(ESP_STATE_WAIT_PUBLISH_PROPERTY_RES, 10000);
+    case SUBSCRIBE_SET: // 订阅上传响应主题
+        sendCommand(cmd, "OK", READY, 1);
+        ESP8266_ClearBuffer();
         break;
-
-    case ESP_STATE_WAIT_PUBLISH_PROPERTY_RES:
-        if (Esp8266_ResponseContains("OK"))
+    // case CONTROL_CMD: // 订阅命令主题
+    //     sprintf(cmd, "AT+MQTTSUB=0,\"$sys/%s/%s/thing/property/get\", 0", PRODUCT_ID, DEVICE_NAME);
+    //     sendCommand(cmd, "OK", READY, 1);
+    //     break;
+    case SET_TIME:
+        sprintf(cmd, "AT+CIPSNTPCFG=1,8,\"%s\",\"%s\"", "cn.ntp.org.cn", "ntp.sjtu.edu.cn"); // 设置时区
+        sendCommand(cmd, "OK", QUERY_TIME, 1);
+        break;
+    case QUERY_TIME:
+        sendCommand("AT+CIPSNTPTIME?", "OK", GET_TIME, 1); // 获取时间
+        break;
+    case GET_TIME:;
+        uint32_t sec = 0;
+        if (strstr((char *)rx_wifi_buffer, "1970") != NULL)
         {
-            esp_retry_count = 0;
-            esp_state = ESP_STATE_SEND_PUBLISH_PROPERTY_SET;
+            esp_state = QUERY_TIME; // ready // 如果时间查错重新查
         }
-        else if (Esp8266_ResponseContains("ERROR") || Esp8266_DeadlineExpired())
+        if (Time_ParseSntp((char *)rx_wifi_buffer, &sec))
         {
-            esp_state = ESP_STATE_SEND_MQTT_USER;
+            Time_SetUnix(sec); // 记录获取时间
+            esp_state = READY; // ready
         }
         break;
-
-    case ESP_STATE_SEND_PUBLISH_PROPERTY_SET:
-        sprintf(cmd, "AT+MQTTSUB=0,\"$sys/%s/%s/thing/property/post/set\",0", PRODUCT_ID, DEVICE_NAME);
-        ESP8266_SendCommand(cmd);
-        Esp8266_StartWait(ESP_STATE_WAIT_PUBLISH_PROPERTY_SET, 10000);
-        break;
-
-    case ESP_STATE_WAIT_PUBLISH_PROPERTY_SET:
-        if (Esp8266_ResponseContains("OK"))
-        {
-            esp_retry_count = 0;
-            esp_state = ESP_STATE_READY;
-        }
-        else if (Esp8266_ResponseContains("ERROR") || Esp8266_DeadlineExpired())
-        {
-            esp_state = ESP_STATE_SEND_MQTT_USER;
-        }
-        break;
-
-    case ESP_STATE_READY:
+    case READY:
         // 建链完成后，等待传感器任务提交新的 JSON 数据
         if (publish_pending)
         {
-            esp_state = ESP_STATE_PUBLISH_SEND;
+            esp_state = HEAD;
         }
         break;
-
-    case ESP_STATE_PUBLISH_SEND:
-        // RAW 发布先发送头命令，模块返回 > 后才能发送 JSON 内容
-        sprintf(cmd, "AT+MQTTPUBRAW=0,\"$sys/%s/%s/thing/property/post\",%d,0,0",
+    case HEAD:
+        sprintf(cmd, "AT+MQTTPUBRAW=0,\"$sys/%s/%s/thing/property/post\",%d,0,0", // 请求上报
                 PRODUCT_ID, DEVICE_NAME, strlen(publish_buffer));
-        ESP8266_SendCommand(cmd);
-        Esp8266_StartWait(ESP_STATE_PUBLISH_WAIT_PROMPT, 3000);
+        sendCommand(cmd, ">", PUSH, 1);
         break;
-
-    case ESP_STATE_PUBLISH_WAIT_PROMPT:
-        // > 表示 ESP8266 已经进入 payload 接收模式
-        if (Esp8266_ResponseContains(">"))
-        {
-            debugger_printf("buffer is %s\r\n", rx_wifi_buffer);
-            ESP8266_SendRaw(publish_buffer);
-            Esp8266_StartWait(ESP_STATE_PUBLISH_WAIT_RESULT, 5000);
-        }
-        else if (Esp8266_ResponseContains("ERROR") || Esp8266_DeadlineExpired())
-        {
-            debugger_printf("MQTT publish prompt failed\r\n");
-            publish_pending = 0;
-            esp_state = ESP_STATE_QUERY_STATE;
-        }
-        break;
-
-    case ESP_STATE_PUBLISH_WAIT_RESULT:
-        // payload 发送完成后等待模块确认发布结果
-        if (Esp8266_ResponseContains("success") || Esp8266_ResponseContains("OK"))
-        {
-            debugger_printf("MQTT publish success\r\n");
-            debugger_printf("ESP_STATE_PUBLISH_WAIT_RESULT buffer is %s\r\n", rx_wifi_buffer);
-            publish_pending = 0;
-            esp_state = ESP_STATE_READY;
-        }
-        else if (Esp8266_DeadlineExpired())
-        {
-            publish_pending = 0;
-            esp_state = ESP_STATE_QUERY_STATE;
-        }
-        break;
-
-        // case ESP_STATE_ERROR:
-        //     // 错误状态不阻塞主循环，达到重试时间后从 AT 开始恢复
-        //     if (Esp8266_DeadlineExpired())
-        //     {
-        //         Esp8266_ClearResponse();
-        //         esp_retry_count = 0;
-        //         esp_state = ESP_STATE_SEND_AT;
-        //     }
-        //     break;
-
-    default:
-        esp_state = ESP_STATE_QUERY_STATE;
+    case PUSH:
+        sendCommand(publish_buffer, "success", READY, 0);
+        publish_pending = 0;
+        ESP8266_ClearBuffer();
         break;
     }
+    return esp_state;
 }
 
-int Get_MQTT_Connect_Status(void) // 获取 MQTT 连接状态
+void Get_MQTT_Connect_Status(void) // 获取 MQTT 连接状态
 {
     char *p = strstr((char *)rx_wifi_buffer, "+MQTTCONN:");
     int status = 0;
@@ -344,11 +177,28 @@ int Get_MQTT_Connect_Status(void) // 获取 MQTT 连接状态
     {
         p += strlen("+MQTTCONN:");    // 移动指针到状态码位置
         sscanf(p, "%*d,%d", &status); // 解析状态码
-        return status;
-    }
-    else
-    {
-        return 0; // 未找到状态码，返回0表示未连接
+        debugger_printf("MQTT status: %d\n", status);
+        if (status == 0)
+        {
+            esp_state = SET_USER;
+        }
+        else if (status == 3)
+        {
+            vTaskDelay(3000);
+            esp_state = QUERY_STATE;
+        }
+        else if (status == 4) // 未订阅主题
+        {
+            esp_state = SUBSCRIBE_RES;
+        }
+        else if (status == 6)
+        {
+            esp_state = SET_TIME; // 设置时间
+        }
+        else
+        {
+            esp_state = SET_USER;
+        }
     }
 }
 
@@ -363,3 +213,160 @@ uint8_t Publish_MQTT_Message(const char *message)
     publish_pending = 1;
     return 1; // 仅表示消息已接收，最终结果由 ESP8266_Task() 异步打印
 }
+/**
+ * @brief 获取esp8266·状态
+ */
+EspState get_esp_status()
+{
+    return esp_state;
+}
+
+uint8_t get_publish_pending()
+{
+    return publish_pending;
+}
+// /**
+//  * @brief 将id封装成json字符串
+//  * @param id 设备ID
+//  * @return JSON字符串
+//  */
+// char *stringfy_json(const char *id)
+// {
+//     cJSON *root = cJSON_CreateObject();
+//     if (root == NULL)
+//     {
+//         return NULL;
+//     }
+//     if (cJSON_AddStringToObject(root, "id", id) == NULL ||
+//         cJSON_AddNumberToObject(root, "code", 200) == NULL ||
+//         cJSON_AddStringToObject(root, "msg", "success") == NULL)
+//     {
+//         cJSON_Delete(root);
+//         return NULL;
+//     }
+//     char *json_string = cJSON_PrintUnformatted(root);
+//     cJSON_Delete(root);
+//     return json_string;
+// }
+
+/**
+ * @brief 解析云端命令
+ */
+
+void parse_command(const char *json_str, uint8_t *value)
+{
+    cJSON *root = cJSON_Parse(json_str);
+    if (root == NULL)
+        return;
+    cJSON *id_item = cJSON_GetObjectItem(root, "id");
+    if (id_item && cJSON_IsString(id_item))
+    {
+        sprintf(cmd, "AT+MQTTPUB=0,\"$sys/%s/%s/thing/property/set_reply\",\"{\\\"id\\\":\\\"%s\\\"\\,\\\"code\\\":200\\,\\\"msg\\\":\\\"success\\\"}\",0,0", PRODUCT_ID, DEVICE_NAME, id_item->valuestring);
+    }
+    cJSON *params = cJSON_GetObjectItem(root, "params");
+    if (params && cJSON_IsObject(params))
+    {
+        cJSON *led_item = cJSON_GetObjectItem(params, "led");
+        if (led_item && cJSON_IsBool(led_item))
+        {
+            *value = cJSON_IsTrue(led_item); // true → 1
+        }
+    }
+    cJSON_Delete(root);
+}
+/**
+ * @brief 解析ota信息
+ */
+int parse_ota_info(const char *json_str, OTAJSON_t *info)
+{
+    if (!json_str || !info)
+        return -1;
+
+    cJSON *root = cJSON_Parse(json_str);
+    if (!root)
+        return -2;
+
+    cJSON *params = cJSON_GetObjectItem(root, "params");
+    if (!params)
+    {
+        cJSON_Delete(root);
+        return -3;
+    }
+
+    cJSON *ota = cJSON_GetObjectItem(params, "OTAJSON");
+    if (!ota)
+    {
+        cJSON_Delete(root);
+        return -4;
+    }
+
+    cJSON *item = NULL;
+
+    item = cJSON_GetObjectItem(ota, "isOTA");
+    if (item)
+        info->isOTA = cJSON_IsTrue(item);
+
+    item = cJSON_GetObjectItem(ota, "md5");
+    if (item && cJSON_IsString(item))
+    {
+        strncpy(info->md5, item->valuestring, sizeof(info->md5) - 1);
+        info->md5[sizeof(info->md5) - 1] = '\0';
+    }
+
+    item = cJSON_GetObjectItem(ota, "size");
+    if (item && cJSON_IsNumber(item))
+        info->size = (uint32_t)item->valuedouble;
+
+    item = cJSON_GetObjectItem(ota, "target");
+    if (item && cJSON_IsString(item))
+    {
+        strncpy(info->target, item->valuestring, sizeof(info->target) - 1);
+        info->target[sizeof(info->target) - 1] = '\0';
+    }
+
+    item = cJSON_GetObjectItem(ota, "tid");
+    if (item && cJSON_IsNumber(item))
+        info->tid = (uint32_t)item->valuedouble; // ← 关键修复
+
+    cJSON_Delete(root); // 删原始 root，会递归释放 ota
+    return 0;
+}
+
+/**
+ * @brief 获取云端下发命令
+ */
+
+uint8_t get_net_cmd(void)
+{
+    if (Esp8266_ResponseContains("}}"))
+    {
+        char *json_start = strstr((char *)rx_wifi_buffer, "{");
+        if (json_start != NULL)
+        {
+            debugger_log(rx_wifi_buffer);
+            uint8_t value = 3;
+            parse_command(json_start, &value);
+            parse_ota_info(json_start, &ota_json);
+            // __disable_irq();
+            esp_state = SUBSCRIBE_SET; // 进入上报状态
+            // __enable_irq();
+            return value;
+        }
+        return 2;
+    }
+    return 3;
+}
+
+OTAJSON_t get_ota_json(void)
+{
+    return ota_json;
+}
+
+/**
+ * 发送连接tcp的指令
+ */
+// uint8_t link_tcp_server()
+// {
+//     ESP8266_SendCommand
+//     sendCommand("AT", "OK", SET_MODE, 1);
+// }

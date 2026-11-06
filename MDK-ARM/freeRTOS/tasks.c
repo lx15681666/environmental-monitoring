@@ -1667,6 +1667,7 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB ) PRIVILEGED_FUNCTION;
             /* MISRA Ref 11.5.1 [Malloc memory assignment] */
             /* More details at: https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/MISRA.md#rule-115 */
             /* coverity[misra_c_2012_rule_11_5_violation] */
+            // 传入需要申请的栈空间的大小，单位是字 = 4个字节（在这个地方）
             pxStack = pvPortMallocStack( ( ( ( size_t ) uxStackDepth ) * sizeof( StackType_t ) ) );
 
             if( pxStack != NULL )
@@ -1715,14 +1716,14 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB ) PRIVILEGED_FUNCTION;
     }
 /*-----------------------------------------------------------*/
 
-    BaseType_t xTaskCreate( TaskFunction_t pxTaskCode,
-                            const char * const pcName,
-                            const configSTACK_DEPTH_TYPE uxStackDepth,
-                            void * const pvParameters,
-                            UBaseType_t uxPriority,
-                            TaskHandle_t * const pxCreatedTask )
+    BaseType_t xTaskCreate( TaskFunction_t pxTaskCode, // 任务函数的名称，也就是具体函数的地址
+                            const char * const pcName, // 任务的名称
+                            const configSTACK_DEPTH_TYPE uxStackDepth, // 栈空间的深度
+                            void * const pvParameters, // 传给具体任务函数的参数
+                            UBaseType_t uxPriority, // 任务的优先级
+                            TaskHandle_t * const pxCreatedTask ) // 任务句柄，包含该任务的所有信息
     {
-        TCB_t * pxNewTCB;
+        TCB_t * pxNewTCB; // 任务控制块
         BaseType_t xReturn;
 
         traceENTER_xTaskCreate( pxTaskCode, pcName, uxStackDepth, pvParameters, uxPriority, pxCreatedTask );

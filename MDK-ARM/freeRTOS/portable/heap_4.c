@@ -178,10 +178,11 @@ void * pvPortMalloc( size_t xWantedSize )
     void * pvReturn = NULL;
     size_t xAdditionalRequiredSize;
 
-    if( xWantedSize > 0 )
+    if( xWantedSize > 0 ) // 如果想要申请的栈空间大于0
     {
         /* The wanted size must be increased so it can contain a BlockLink_t
          * structure in addition to the requested amount of bytes. */
+        // 判断要申请的字节是否超出
         if( heapADD_WILL_OVERFLOW( xWantedSize, xHeapStructSize ) == 0 )
         {
             xWantedSize += xHeapStructSize;

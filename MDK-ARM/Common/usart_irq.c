@@ -47,23 +47,29 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 }
 // 处理接收完成事件
 
-void ESP8266_SendCommand(const char *cmd)
+void ESP8266_SendCommand(const char *cmd, uint8_t select)
+{
+    ESP8266_ClearBuffer();
+    printf("Send: %s\r\n", cmd);
+    HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), HAL_MAX_DELAY);
+    if (select == 1)
+        HAL_UART_Transmit(&huart2, (uint8_t *)"\r\n", 2, HAL_MAX_DELAY);
+}
+
+/**
+ * @brief 清空buffer
+ */
+
+void ESP8266_ClearBuffer(void)
 {
     __disable_irq();
     memset(rx_wifi_buffer, 0, sizeof(rx_wifi_buffer));
     rx_wifi_index = 0;
     __enable_irq();
-    printf("Send: %s\r\n", cmd);
-    HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), HAL_MAX_DELAY);
-    HAL_UART_Transmit(&huart2, (uint8_t *)"\r\n", 2, HAL_MAX_DELAY);
 }
 
 void ESP8266_SendRaw(const char *data)
 {
-    __disable_irq();
-    memset(rx_wifi_buffer, 0, sizeof(rx_wifi_buffer));
-    rx_wifi_index = 0;
-    __enable_irq();
-
+    ESP8266_ClearBuffer();
     HAL_UART_Transmit(&huart2, (uint8_t *)data, strlen(data), HAL_MAX_DELAY);
 }
